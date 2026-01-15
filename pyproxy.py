@@ -38,7 +38,9 @@ class ProxySettings:
         self.censor_word_target = ""
         self.censor_word_replace = "****"
         self.block_images = False
+        self.block_images = False
         self.inject_banner = True
+        self.blocked_domains = ""
 
     # User Agents predefiniti
     USER_AGENTS = {
@@ -51,206 +53,103 @@ class ProxySettings:
 global_settings = ProxySettings()
 
 # ===========================
-# === 2. SERVICE (Backend Logic) ===
+# === 2. SERVICE (Process Management & IPC) ===
 # ===========================
-# Adaugam un dictionar global pentru a tine minte IP-urile
-# --- DICTIONAR GLOBAL PENTRU CACHE (Daca nu il ai deja pus sus) ---
-DNS_CACHE = {}
+import subprocess
+import signal
+import json
+import socket
 
-class AdvancedProxyHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        browser_socket = self.request
-        remote_socket = None
+CPP_PROXY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cpp", "proxy_engine")
+if not os.path.exists(CPP_PROXY_PATH):
+    # Daca rulam din root, poate calea e diferita
+    CPP_PROXY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "HTTP_proxy", "cpp", "proxy_engine")
+
+proxy_process = None
+
+def start_cpp_backend():
+    global proxy_process
+    try:
+        if not os.path.exists(CPP_PROXY_PATH):
+            log_queue.put("[ERROR] Executabilul C++ nu a fost gasit!")
+            log_queue.put(f"Cale cautata: {CPP_PROXY_PATH}")
+            return
+
+        # Start C++ process
+        # Use simple Popen without setsid to avoid complex process group issues in simple environments, 
+        # or handle properly. For now we trust simple execution.
+        proxy_process = subprocess.Popen([CPP_PROXY_PATH, str(PROXY_PORT)], preexec_fn=os.setsid)
+        log_queue.put(f"[SYSTEM] Backend C++ pornit (PID: {proxy_process.pid})")
         
-        # 0. Aflam numele Thread-ului curent
-        # Python le numeste automat Thread-1, Thread-2 etc.
-        t_name = threading.current_thread().name
-        # Curatam numele lung dat de Python Executor
-        if "ThreadPoolExecutor" in t_name:
-            # Extragem doar numarul final (ex: "ThreadPoolExecutor-0_1" -> "POOL-1")
-            parts = t_name.split("_")
-            t_id = "POOL-" + parts[-1]
-        else:
-            t_id = t_name
+        # Give it a moment to start listening
+        import time
+        time.sleep(0.5)
+        
+        # Send initial settings
+        send_settings_to_cpp()
+        
+    except Exception as e:
+        log_queue.put(f"[ERROR] Nu s-a putut porni C++: {e}")
 
+def stop_cpp_backend():
+    global proxy_process
+    if proxy_process:
         try:
-            # 1. Citim rapid
-            browser_socket.settimeout(2.0)
-            try:
-                request_data = browser_socket.recv(BUFFER_SIZE)
-                if not request_data: return
-            except: return
-
-            # 2. Parsam Host-ul
-            host, port = self._extract_host_port(request_data)
-            if not host: return
-            
-            # --- LOGARE CU THREAD ID ---
-            first_line = request_data.split(b'\r\n')[0].decode('utf-8', errors='ignore')
-            
-            # Verificam daca e fisier static ca sa nu umplem consola, 
-            # DAR lasam cateva ca sa se vada ca lucreaza thread-urile
-            is_static = any(ext in first_line for ext in [".css", ".js", ".woff"])
-            
-            # Logam HTML-ul si imaginile (ca sa vezi thread-uri diferite la poze)
-            if not is_static:
-                 # AICI E MODIFICAREA: Adaugam [{t_id}] la inceput
-                 log_queue.put(f"[{t_id}] [REQ] {first_line[:60]}...")
-
-            # 3. Modificam Cererea
-            final_request_data = self._modify_request(request_data)
-
-            # --- DNS CACHE ---
-            cache_key = (host, port)
-            if cache_key in DNS_CACHE:
-                remote_address = DNS_CACHE[cache_key]
-            else:
-                try:
-                    remote_ip = socket.gethostbyname(host)
-                    remote_address = (remote_ip, port)
-                    DNS_CACHE[cache_key] = remote_address
-                except:
-                    return 
-
-            # 4. Conectare la Server
-            remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            remote_socket.settimeout(5.0) 
-            remote_socket.connect(remote_address)
-            remote_socket.sendall(final_request_data)
-
-            # 5. STREAMING vs BUFFERING
-            remote_socket.settimeout(3.0)
-            
-            initial_chunk = remote_socket.recv(BUFFER_SIZE)
-            if not initial_chunk: return
-
-            is_html = False
-            if b"Content-Type: text/html" in initial_chunk:
-                is_html = True
-
-            # CAZ A: STATIC FILES (Viteza Maxima - Poze, etc)
-            if not is_html:
-                browser_socket.sendall(initial_chunk)
-                while True:
-                    try:
-                        chunk = remote_socket.recv(BUFFER_SIZE)
-                        if not chunk: break
-                        browser_socket.sendall(chunk)
-                    except socket.timeout: break
-                
-                # Optional: Logam si cand termina un fisier static mare, ca sa vezi Thread-ul
-                if ".png" in first_line or ".jpg" in first_line:
-                    # log_queue.put(f"[{t_id}] [STREAM] Imagine transferata rapid.")
-                    pass
-            
-            # CAZ B: HTML (Modificare)
-            else:
-                response_buffer = initial_chunk
-                while True:
-                    try:
-                        chunk = remote_socket.recv(BUFFER_SIZE)
-                        if not chunk: break
-                        response_buffer += chunk
-                    except socket.timeout: break
-                
-                final_response = self._modify_response(response_buffer)
-                browser_socket.sendall(final_response)
-                
-                # AICI E MODIFICAREA: Logam succesul cu ID-ul thread-ului
-                log_queue.put(f"[{t_id}] [FILTER] HTML injectat & trimis ({len(final_response)} bytes)")
-
-        except Exception:
-            pass
-        finally:
-            if remote_socket: remote_socket.close()
-            browser_socket.close()
-
-    # --- RESTUL METODELOR RAMAN EXACT LA FEL (NU LE STERGE) ---
-    def _extract_host_port(self, data):
-        data_str = data.decode('utf-8', errors='ignore')
-        host = None
-        port = 80
-        match = re.search(r'Host:\s*([^\r\n]+)', data_str, re.IGNORECASE)
-        if match:
-            host_part = match.group(1).strip()
-            if ':' in host_part:
-                h, p = host_part.split(':')
-                return h, int(p)
-            return host_part, 80
-        return None, 80
-
-    def _modify_request(self, data):
-        try:
-            data_str = data.decode('utf-8', errors='ignore')
-            data_str = re.sub(r'Connection: keep-alive', 'Connection: close', data_str, flags=re.IGNORECASE)
-            data_str = re.sub(r'Accept-Encoding:.*?\r\n', '', data_str, flags=re.IGNORECASE)
-            
-            if global_settings.spoof_user_agent:
-                fake_agent = global_settings.USER_AGENTS.get(global_settings.selected_user_agent, "MyProxy")
-                if "User-Agent:" in data_str:
-                    data_str = re.sub(r'User-Agent:.*?\r\n', f'User-Agent: {fake_agent}\r\n', data_str)
-            
-            if global_settings.strip_cookies:
-                data_str = re.sub(r'Cookie:.*?\r\n', '', data_str, flags=re.IGNORECASE)
-
-            return data_str.encode('utf-8')
+            os.killpg(os.getpgid(proxy_process.pid), signal.SIGTERM)
+            log_queue.put("[SYSTEM] Backend C++ oprit.")
         except:
-            return data
+            pass
+        proxy_process = None
 
-    def _modify_response(self, data):
-        # Foloseste varianta optimizata (cea cu stergere Chunked/Gzip)
+def send_settings_to_cpp():
+    try:
+        settings_dict = {
+            "spoof_user_agent": str(global_settings.spoof_user_agent).lower(),
+            "selected_user_agent": global_settings.selected_user_agent,
+            "strip_cookies": str(global_settings.strip_cookies).lower(),
+            "rewrite_https": str(global_settings.rewrite_https).lower(),
+            "censor_enabled": str(global_settings.censor_enabled).lower(),
+            "censor_word_target": global_settings.censor_word_target,
+            "censor_word_replace": global_settings.censor_word_replace,
+            "block_images": str(global_settings.block_images).lower(),
+            "inject_banner": str(global_settings.inject_banner).lower(),
+            "blocked_domains": global_settings.blocked_domains
+        }
+        
+        json_payload = json.dumps(settings_dict) 
+        
+        # Connect to C++ Control Port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        sock.connect(('127.0.0.1', 8889))
+        sock.sendall(json_payload.encode('utf-8'))
+        sock.close()
+        
+    except Exception as e:
+        # log_queue.put(f"[WARN] Nu s-au putut trimite setarile: {e}")
+        pass
+
+# --- UDP LOG RECEIVER ---
+def start_log_receiver():
+    udp_ip = "127.0.0.1"
+    udp_port = 8890
+    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((udp_ip, udp_port))
+    sock.settimeout(1.0)
+    
+    log_queue.put(f"[SYSTEM] Log Receiver asculta pe {udp_ip}:{udp_port}")
+    
+    while True:
         try:
-            parts = data.split(b'\r\n\r\n', 1)
-            if len(parts) < 2: return data
-            header = parts[0]
-            body = parts[1]
-            try:
-                body_str = body.decode('utf-8', errors='ignore')
-                if global_settings.rewrite_https: body_str = body_str.replace('href="http://', 'href="https://')
-                if global_settings.censor_enabled and global_settings.censor_word_target:
-                    p = re.compile(re.escape(global_settings.censor_word_target), re.IGNORECASE)
-                    body_str = p.sub(global_settings.censor_word_replace, body_str)
-                if global_settings.block_images: body_str = re.sub(r'<img[^>]*>', '[IMG BLOCKED]', body_str)
-                if global_settings.inject_banner:
-                    banner = "<div style='background:red;color:white;text-align:center;padding:10px;font-weight:bold;position:fixed;top:0;left:0;width:100%;z-index:999999;'>⚠️ PROXY ACTIV ⚠️</div><br><br><br>"
-                    if "<body" in body_str: body_str = re.sub(r'<body[^>]*>', lambda m: m.group(0) + banner, body_str, count=1)
-                    else: body_str = banner + body_str
-                
-                new_body = body_str.encode('utf-8')
-                header_str = header.decode('utf-8', errors='ignore')
-                header_str = re.sub(r'Transfer-Encoding:.*?\r\n', '', header_str, flags=re.IGNORECASE)
-                header_str = re.sub(r'Content-Encoding:.*?\r\n', '', header_str, flags=re.IGNORECASE)
-                if "Connection:" in header_str: header_str = re.sub(r'Connection:.*?\r\n', 'Connection: close\r\n', header_str, flags=re.IGNORECASE)
-                else: header_str += "\r\nConnection: close"
-                new_len = len(new_body)
-                if "Content-Length:" in header_str: header_str = re.sub(r'Content-Length:\s*\d+', f'Content-Length: {new_len}', header_str, flags=re.IGNORECASE)
-                else: header_str += f"\r\nContent-Length: {new_len}"
-                
-                return header_str.encode('utf-8') + b'\r\n\r\n' + new_body
-            except: return data
-        except: return data
+            data, addr = sock.recvfrom(4096)
+            msg = data.decode('utf-8').strip()
+            log_queue.put(msg)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
 
-class PooledProxyServer(socketserver.TCPServer):
-    allow_reuse_address = True
-
-    def __init__(self, server_address, RequestHandlerClass, max_workers=20):
-        # Initializam serverul parinte
-        super().__init__(server_address, RequestHandlerClass)
-        # Cream o echipa fixa de muncitori (Pool)
-        self.pool = ThreadPoolExecutor(max_workers=max_workers)
-
-    def process_request(self, request, client_address):
-        # Aici este magia: In loc sa cream un thread nou, trimitem sarcina in Pool
-        self.pool.submit(self.process_request_thread, request, client_address)
-
-    def process_request_thread(self, request, client_address):
-        """Aceasta metoda este executata de unul din muncitorii din Pool"""
-        try:
-            self.finish_request(request, client_address)
-        except Exception:
-            self.handle_error(request, client_address)
-        finally:
-            self.shutdown_request(request)
 
 # ===========================
 # === 3. GUI (CYBERPUNK / MODERN STYLE) - FIXED ===
@@ -358,7 +257,7 @@ class AdvancedProxyGUI:
         )
         self.log_area.pack(fill="both", expand=True)
         
-        self.log_area.insert(tk.END, """
+        self.log_area.insert(tk.END, r"""
   _   _   _______   _____    _____  _____   _______   __ __   __
  | | | | |__   __| |  __ \  |  __ \|  __ \ /  __   \  \ \ / /
  | |_| |    | |    | |__) | | |__) | |__) ||  |  |  |   \ V / 
@@ -397,6 +296,14 @@ class AdvancedProxyGUI:
         
         self.var_cookies = tk.BooleanVar()
         ttk.Checkbutton(card_sec, text="Strip Cookies (Navigare Anonimă - Serverul nu te reține)", variable=self.var_cookies, command=self.sync_settings).pack(anchor="w")
+
+        # Card 3: Firewall (Blocked Domains)
+        card_fw = self._create_card(self.tab_req, "🔥 Firewall / Blocare Domenii")
+        ttk.Label(card_fw, text="Domenii interzise (separate prin virgulă):", background=self.colors["panel"]).pack(anchor="w")
+        
+        self.txt_blocked = tk.Text(card_fw, height=3, bg="#333", fg="white", insertbackground="white", font=("Consolas", 10))
+        self.txt_blocked.pack(fill="x", pady=5)
+        self.txt_blocked.bind("<KeyRelease>", lambda e: self.sync_settings())
 
     def _setup_response_tab(self):
         # Card 1: Vizual
@@ -447,7 +354,13 @@ class AdvancedProxyGUI:
         global_settings.block_images = self.var_imgs.get()
         global_settings.censor_enabled = self.var_censor.get()
         global_settings.censor_word_target = self.entry_target.get()
+        global_settings.censor_word_target = self.entry_target.get()
         global_settings.censor_word_replace = self.entry_replace.get()
+        global_settings.blocked_domains = self.txt_blocked.get("1.0", tk.END).strip().replace("\n", "|").replace(",", "|")
+        
+        # Trimite update catre C++
+        threading.Thread(target=send_settings_to_cpp).start()
+
 
     def update_logs(self):
         try:
@@ -462,17 +375,25 @@ class AdvancedProxyGUI:
 # ===========================
 # === MAIN ===
 # ===========================
-def start_server():
-    socketserver.TCPServer.allow_reuse_address = True
-    server = PooledProxyServer((PROXY_HOST, PROXY_PORT), AdvancedProxyHandler, max_workers=20)
-    server.serve_forever()
-
 def on_closing():
+    stop_cpp_backend()
     os._exit(0)
 
+def start_server_thread():
+    # Pornim Receiver de Loguri
+    t_log = threading.Thread(target=start_log_receiver)
+    t_log.daemon = True
+    t_log.start()
+    
+    # Pornim Procesul C++
+    time.sleep(0.5)
+    start_cpp_backend()
+
 if __name__ == "__main__":
-    # Pornim server in thread
-    t = threading.Thread(target=start_server)
+    import time
+    
+    # Pornim server services in thread
+    t = threading.Thread(target=start_server_thread)
     t.daemon = True
     t.start()
     
