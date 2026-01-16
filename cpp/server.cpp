@@ -46,7 +46,7 @@ void Server::start() {
             continue;
         }
 
-        // Spawn a new thread for each client (detached)
+        //folosim pentru fiecare client cate un thread separat
         std::thread([client_sock](){
             handle_client(client_sock);
         }).detach();

@@ -13,26 +13,26 @@ from concurrent.futures import ThreadPoolExecutor
 # --- CONFIGURARE ---
 PROXY_HOST = '0.0.0.0'
 PROXY_PORT = 8888
-BUFFER_SIZE = 65536  # Buffer mai mare pentru performanta
+BUFFER_SIZE = 65536  # buffer mai mare pentru performanta
 
-# Cozi de comunicare
+# cozi de comunicare
 log_queue = queue.Queue() # Pentru a trimite mesaje text catre GUI
 
 # ===========================
 # === 1. MODEL & SETTINGS ===
 # ===========================
 class ProxySettings:
-    """
-    Singleton care tine minte configuratiile bifate in GUI.
-    Orice modificare in GUI se reflecta aici, iar Serverul citeste de aici.
-    """
+    
+    #singleton care tine minte configuratiile bifate in GUI.
+    #orice modificare in GUI se reflecta aici, iar Serverul citeste de aici.
+    
     def __init__(self):
-        # Request Settings
+        # request settings
         self.spoof_user_agent = False
         self.selected_user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)"
         self.strip_cookies = False
         
-        # Response Settings
+        # response settings
         self.rewrite_https = False
         self.censor_enabled = False
         self.censor_word_target = ""
@@ -62,7 +62,7 @@ import socket
 
 CPP_PROXY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cpp", "proxy_engine")
 if not os.path.exists(CPP_PROXY_PATH):
-    # Daca rulam din root, poate calea e diferita
+    #daca rulam din root, poate calea e diferita
     CPP_PROXY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "HTTP_proxy", "cpp", "proxy_engine")
 
 proxy_process = None
@@ -75,17 +75,15 @@ def start_cpp_backend():
             log_queue.put(f"Cale cautata: {CPP_PROXY_PATH}")
             return
 
-        # Start C++ process
-        # Use simple Popen without setsid to avoid complex process group issues in simple environments, 
-        # or handle properly. For now we trust simple execution.
+        #incepe procesul C+++
         proxy_process = subprocess.Popen([CPP_PROXY_PATH, str(PROXY_PORT)], preexec_fn=os.setsid)
         log_queue.put(f"[SYSTEM] Backend C++ pornit (PID: {proxy_process.pid})")
         
-        # Give it a moment to start listening
+      
         import time
         time.sleep(0.5)
         
-        # Send initial settings
+        #trimite setarile initiale
         send_settings_to_cpp()
         
     except Exception as e:
@@ -118,7 +116,7 @@ def send_settings_to_cpp():
         
         json_payload = json.dumps(settings_dict) 
         
-        # Connect to C++ Control Port
+        # connect la C++ control port
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(0.5)
         sock.connect(('127.0.0.1', 8889))
@@ -173,34 +171,34 @@ class AdvancedProxyGUI:
             "terminal_fg": "#00ff41"   # Matrix Green
         }
 
-        # Configurare Stiluri TTK
+        # configurare stiluri TTK
         self.style = ttk.Style()
         self.style.theme_use('clam')
 
-        # Configurare culori generale
+        # configurare culori generale
         self.root.configure(bg=self.colors["bg"])
         
-        # Stil Frame-uri
+        # stil frame-uri
         self.style.configure("TFrame", background=self.colors["bg"])
         self.style.configure("Card.TFrame", background=self.colors["panel"], relief="flat")
         
-        # Stil Label-uri
+        # stil label-uri
         self.style.configure("TLabel", background=self.colors["bg"], foreground=self.colors["fg"], font=("Segoe UI", 10))
         self.style.configure("Header.TLabel", font=("Segoe UI", 16, "bold"), foreground=self.colors["accent"])
         self.style.configure("SubHeader.TLabel", font=("Segoe UI", 12, "bold"), foreground=self.colors["warning"])
         
-        # Stil Checkbutton
+        # stil checkbutton
         self.style.configure("TCheckbutton", background=self.colors["panel"], foreground=self.colors["fg"], font=("Segoe UI", 10))
         self.style.map("TCheckbutton", background=[('active', self.colors["panel"])])
 
-        # Stil Notebook (Tab-uri)
+        # stil notebook (tab-uri)
         self.style.configure("TNotebook", background=self.colors["bg"], borderwidth=0)
         self.style.configure("TNotebook.Tab", background=self.colors["panel"], foreground=self.colors["fg"], padding=[15, 5], font=("Segoe UI", 10, "bold"))
         self.style.map("TNotebook.Tab", background=[("selected", self.colors["accent"])], foreground=[("selected", "white")])
 
         # --- LAYOUT PRINCIPAL ---
         
-        # 1. Header
+        # 1. header
         header_frame = ttk.Frame(root)
         header_frame.pack(fill="x", padx=20, pady=15)
         
@@ -208,7 +206,7 @@ class AdvancedProxyGUI:
         self.lbl_status = tk.Label(header_frame, text="● ONLINE", bg=self.colors["bg"], fg=self.colors["success"], font=("Segoe UI", 10, "bold"))
         self.lbl_status.pack(side="right")
 
-        # 2. Tabs
+        # 2. tabs
         self.tab_control = ttk.Notebook(root)
         self.tab_monitor = ttk.Frame(self.tab_control)
         self.tab_req = ttk.Frame(self.tab_control)
@@ -223,27 +221,26 @@ class AdvancedProxyGUI:
         self._setup_request_tab()
         self._setup_response_tab()
 
-        # Footer
+        #footer
         footer = tk.Label(root, text="Proiect Sisteme de Operare | Student Demo Build", bg=self.colors["bg"], fg="#666666", font=("Segoe UI", 8))
         footer.pack(side="bottom", pady=5)
 
-        # Timer Update
+        #timer update
         self.root.after(100, self.update_logs)
 
     def _create_card(self, parent, title):
-        """ Helper pentru a crea un chenar frumos (Card) """
+        #helper pentru a crea un chenar (Card) """
         frame = ttk.Frame(parent, style="Card.TFrame", padding=15)
         frame.pack(fill="x", padx=20, pady=10)
-        # FIX: Am inlocuit mb=10 cu pady=(0, 10)
         ttk.Label(frame, text=title, style="SubHeader.TLabel", background=self.colors["panel"]).pack(anchor="w", pady=(0, 10))
         return frame
 
     def _setup_monitor_tab(self):
-        # Container principal
+        # container principal
         container = ttk.Frame(self.tab_monitor)
         container.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Log Area (Terminal Style)
+        # log area (terminal style)
         self.log_area = scrolledtext.ScrolledText(
             container, 
             width=100, 
@@ -267,7 +264,7 @@ class AdvancedProxyGUI:
                                                               
  SYSTEM READY... LISTENING ON PORT """ + str(PROXY_PORT) + "\n\n")
 
-        # Butoane control log
+        # butoane control log
         btn_frame = ttk.Frame(container)
         btn_frame.pack(fill="x", pady=5)
         
@@ -275,7 +272,7 @@ class AdvancedProxyGUI:
         btn_clear.pack(side="right")
 
     def _setup_request_tab(self):
-        # Card 1: Identitate
+        # card 1: identitate
         card_id = self._create_card(self.tab_req, "🎭 Identitate & Privacy")
         
         self.var_spoof = tk.BooleanVar()
@@ -291,13 +288,13 @@ class AdvancedProxyGUI:
         self.combo_ua.pack(side="left", padx=10)
         self.combo_ua.bind("<<ComboboxSelected>>", self.sync_settings)
 
-        # Card 2: Security
+        # card 2: security
         card_sec = self._create_card(self.tab_req, "🍪 Securitate")
         
         self.var_cookies = tk.BooleanVar()
         ttk.Checkbutton(card_sec, text="Strip Cookies (Navigare Anonimă - Serverul nu te reține)", variable=self.var_cookies, command=self.sync_settings).pack(anchor="w")
 
-        # Card 3: Firewall (Blocked Domains)
+        # card 3: firewall (Blocked Domains)
         card_fw = self._create_card(self.tab_req, "🔥 Firewall / Blocare Domenii")
         ttk.Label(card_fw, text="Domenii interzise (separate prin virgulă):", background=self.colors["panel"]).pack(anchor="w")
         
@@ -306,7 +303,7 @@ class AdvancedProxyGUI:
         self.txt_blocked.bind("<KeyRelease>", lambda e: self.sync_settings())
 
     def _setup_response_tab(self):
-        # Card 1: Vizual
+        # card 1: vizual
         card_viz = self._create_card(self.tab_res, "👁️ Modificări Vizuale")
         
         self.var_banner = tk.BooleanVar(value=True)
@@ -315,13 +312,13 @@ class AdvancedProxyGUI:
         self.var_imgs = tk.BooleanVar()
         ttk.Checkbutton(card_viz, text="Blochează Imaginile (Economisire Bandwidth)", variable=self.var_imgs, command=self.sync_settings).pack(anchor="w", pady=2)
 
-        # Card 2: Securitate
+        # card 2: securitate
         card_sec = self._create_card(self.tab_res, "🔐 Securitate & Link-uri")
         
         self.var_https = tk.BooleanVar()
         ttk.Checkbutton(card_sec, text="Force HTTPS Rewrite (Transformă linkurile http:// în https://)", variable=self.var_https, command=self.sync_settings).pack(anchor="w")
 
-        # Card 3: Cenzura
+        # card 3: cenzura
         card_cens = self._create_card(self.tab_res, "🚫 Cenzură Conținut")
         
         self.var_censor = tk.BooleanVar()
@@ -343,12 +340,12 @@ class AdvancedProxyGUI:
         self.entry_replace.bind("<KeyRelease>", lambda e: self.sync_settings())
 
     def sync_settings(self, event=None):
-        # Request
+        # tequest
         global_settings.spoof_user_agent = self.var_spoof.get()
         global_settings.selected_user_agent = self.combo_ua.get()
         global_settings.strip_cookies = self.var_cookies.get()
         
-        # Response
+        # tesponse
         global_settings.inject_banner = self.var_banner.get()
         global_settings.rewrite_https = self.var_https.get()
         global_settings.block_images = self.var_imgs.get()
@@ -358,7 +355,7 @@ class AdvancedProxyGUI:
         global_settings.censor_word_replace = self.entry_replace.get()
         global_settings.blocked_domains = self.txt_blocked.get("1.0", tk.END).strip().replace("\n", "|").replace(",", "|")
         
-        # Trimite update catre C++
+        # trimite update catre C++
         threading.Thread(target=send_settings_to_cpp).start()
 
 
@@ -380,24 +377,24 @@ def on_closing():
     os._exit(0)
 
 def start_server_thread():
-    # Pornim Receiver de Loguri
+    #pornim receiver de loguri
     t_log = threading.Thread(target=start_log_receiver)
     t_log.daemon = True
     t_log.start()
     
-    # Pornim Procesul C++
+    #pornim procesul C++
     time.sleep(0.5)
     start_cpp_backend()
 
 if __name__ == "__main__":
     import time
     
-    # Pornim server services in thread
+    #pornim server services in thread
     t = threading.Thread(target=start_server_thread)
     t.daemon = True
     t.start()
     
-    # Pornim GUI
+    #pornim GUI
     root = tk.Tk()
     gui = AdvancedProxyGUI(root)
     root.protocol("WM_DELETE_WINDOW", on_closing)
